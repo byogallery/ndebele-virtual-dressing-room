@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Ndebele Virtual Dressing Room — Arm Tracking Prototype</title><style>
+:root{font-family:system-ui,-apple-system,sans-serif;color:#29251e;background:#f6f0e5}body{margin:0}header{padding:14px 16px;background:#272f26;color:white}h1{font-size:20px;margin:0}header small{opacity:.8}main{max-width:700px;margin:auto;padding:12px}#stage{position:relative;width:100%;aspect-ratio:3/4;background:#292e2c;border-radius:14px;overflow:hidden}video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}canvas{pointer-events:none} .bar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button{border:0;border-radius:10px;background:#233c32;color:white;padding:12px 15px;font-size:15px;cursor:pointer}button.secondary{background:#695b4a}button:disabled{opacity:.5}.info{font-size:14px;line-height:1.5;color:#4d4a44}#status{font-weight:600;margin:10px 0}label{display:block;margin-top:8px;font-weight:600}input[type=range]{width:100%}.pill{display:inline-block;background:#e6d9c2;border-radius:20px;padding:5px 10px;font-size:12px}a{color:#194c41}
+</style></head><body><header><h1>Ndebele Virtual Dressing Room</h1><small>Arm-tracking prototype · cultural costume artwork is a placeholder, not a historically verified garment</small></header><main><div id="stage"><video id="camera" autoplay muted playsinline></video><canvas id="overlay"></canvas></div><p id="status" role="status">Tap Start camera to begin.</p><div class="bar"><button id="start">Start camera</button><button id="switch" class="secondary" disabled>Switch camera</button><button id="photo" disabled>Save photo</button><button id="stop" class="secondary" disabled>Stop</button></div><label for="size">Garment size adjustment</label><input id="size" type="range" min="65" max="160" value="105"><p class="info"><span class="pill">Live shoulder, elbow & wrist tracking</span> Stand about 1.5–2.5 metres away, with your shoulders, elbows, wrists and hips visible. Ask someone to hold the phone to see more of the outfit. The decorative overlay is an illustrative placeholder: replace <b>outfit.png</b> with artwork reviewed by Zimbabwean amaNdebele cultural advisers before public display. Camera images are processed on your device and are not uploaded by this prototype. Initial model downloads need internet.</p></main>
+<script type="module">
+import {PoseLandmarker,FilesetResolver} from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm';
+const video=document.querySelector('#camera'),canvas=document.querySelector('#overlay'),ctx=canvas.getContext('2d'),status=document.querySelector('#status');const start=document.querySelector('#start'),stop=document.querySelector('#stop'),photo=document.querySelector('#photo'),sw=document.querySelector('#switch'),scale=document.querySelector('#size');let landmarker,stream,active=false,facing='user',last=-1,frameId,landmarks;const dress=new Image();dress.src='./outfit.png';
+function message(s){status.textContent=s}function resize(){if(!video.videoWidth)return;canvas.width=video.videoWidth;canvas.height=video.videoHeight}
+async function setup(){if(landmarker)return;message('Loading body tracking model (internet required for first load)…');const vision=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm');landmarker=await PoseLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',delegate:'CPU'},runningMode:'VIDEO',numPoses:1,minPoseDetectionConfidence:0.5,minTrackingConfidence:0.5})}
+async function begin(){try{start.disabled=true;await setup();stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:facing},width:{ideal:720},height:{ideal:960}}});video.srcObject=stream;await video.play();resize();active=true;stop.disabled=false;photo.disabled=false;sw.disabled=false;message('Find a well-lit space and show your upper body, including both arms.');render()}catch(e){message('Could not start: '+e.message+' — Open this site via HTTPS in Safari or Chrome, and allow camera access.');start.disabled=false}}
+function cease(){active=false;cancelAnimationFrame(frameId);stream?.getTracks().forEach(t=>t.stop());stream=null;video.srcObject=null;ctx.clearRect(0,0,canvas.width,canvas.height);start.disabled=false;stop.disabled=true;photo.disabled=true;sw.disabled=true;message('Camera stopped.')}
+// This sleeve renderer joins the shoulder → elbow and elbow → wrist pose landmarks.
+// Decorative sleeves are placeholders, not historical costume artwork.
+function sleeveSegment(a,b,widthA,widthB){
+ const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy); if(len<1)return;
+ const nx=-dy/len,ny=dx/len;
+ ctx.beginPath();ctx.moveTo(a.x+nx*widthA/2,a.y+ny*widthA/2);
+ ctx.lineTo(b.x+nx*widthB/2,b.y+ny*widthB/2);
+ ctx.lineTo(b.x-nx*widthB/2,b.y-ny*widthB/2);
+ ctx.lineTo(a.x-nx*widthA/2,a.y-ny*widthA/2);
+ ctx.closePath();ctx.fillStyle='#a66d40';ctx.strokeStyle='#4d3524';ctx.lineWidth=Math.max(2,widthA*.055);
+ ctx.fill();ctx.stroke();
+ // A small decorative stripe perpendicular to the direction of the sleeve.
+ for(const t of [.72,.78]){
+  const x=a.x+dx*t,y=a.y+dy*t,w=widthA+(widthB-widthA)*t;
+  ctx.beginPath();ctx.moveTo(x-nx*w*.45,y-ny*w*.45);ctx.lineTo(x+nx*w*.45,y+ny*w*.45);
+  ctx.strokeStyle='#f4d49c';ctx.lineWidth=Math.max(1.5,widthA*.045);ctx.stroke();
+ }
+}
+function renderArm(lm,a,b,c,shoulderWidth,factor,W,H){
+ const points=[lm[a],lm[b],lm[c]];
+ if(!points.every(p=>p&&p.visibility>.48))return false;
+ const [p,q,r]=points.map(v=>({x:v.x*W,y:v.y*H}));
+ const w=shoulderWidth*factor;
+ // Split the two sleeve sections at the elbow so bending changes the silhouette.
+ sleeveSegment(p,q,w*.46,w*.37);
+ sleeveSegment(q,r,w*.37,w*.25);
+ ctx.beginPath();ctx.arc(q.x,q.y,w*.18,0,Math.PI*2);
+ ctx.fillStyle='#a66d40';ctx.fill();
+ return true;
+}
+function render(){
+ if(!active)return;
+ resizeIfNeeded();ctx.clearRect(0,0,canvas.width,canvas.height);
+ try{
+  if(video.readyState>=2&&video.currentTime!==last){
+   last=video.currentTime;
+   landmarks=landmarker.detectForVideo(video,performance.now()).landmarks?.[0]||null;
+  }
+  if(landmarks&&dress.complete&&dress.naturalWidth){
+   const ls=landmarks[11],rs=landmarks[12],lh=landmarks[23],rh=landmarks[24];
+   if([ls,rs,lh,rh].every(p=>p&&p.visibility>.45)){
+    const W=canvas.width,H=canvas.height;
+    const shx=(ls.x+rs.x)*W/2,shy=(ls.y+rs.y)*H/2;
+    const hx=(lh.x+rh.x)*W/2,hy=(lh.y+rh.y)*H/2;
+    const shoulder=Math.hypot((ls.x-rs.x)*W,(ls.y-rs.y)*H);
+    const torso=Math.hypot(hx-shx,hy-shy);
+    const factor=Number(scale.value)/100;
+    const dw=Math.max(shoulder*1.65,torso*1.1)*factor;
+    const dh=dw*(dress.height/dress.width);
+    const ang=Math.atan2((rs.y-ls.y)*H,(rs.x-ls.x)*W);
+    // Arms are rendered first, behind the torso garment.
+    ctx.save();ctx.globalAlpha=.94;
+    const arm1=renderArm(landmarks,11,13,15,shoulder,factor,W,H);
+    const arm2=renderArm(landmarks,12,14,16,shoulder,factor,W,H);
+    ctx.restore();
+    ctx.save();ctx.translate(shx,shy-.10*torso);ctx.rotate(ang);
+    ctx.globalAlpha=.94;ctx.drawImage(dress,-dw/2,-dh*.12,dw,dh);ctx.restore();
+    message(arm1||arm2?'Arms tracked — raise and bend your elbows!':'Torso tracked — show shoulders, elbows and wrists to move the sleeves.');
+   }else message('Show both shoulders and hips to the camera.');
+  }else message('Show your upper body to the camera.');
+ }catch(e){message('Tracking error: '+e.message)}
+ frameId=requestAnimationFrame(render);
+}
+function resizeIfNeeded(){if(canvas.width!==video.videoWidth||canvas.height!==video.videoHeight)resize()}
+start.addEventListener('click',begin);stop.addEventListener('click',cease);sw.addEventListener('click',async()=>{facing=facing==='user'?'environment':'user';cease();await begin()});photo.addEventListener('click',()=>{if(!active)return;const out=document.createElement('canvas');out.width=canvas.width;out.height=canvas.height;const c=out.getContext('2d');c.translate(out.width,0);c.scale(-1,1);c.drawImage(video,0,0,out.width,out.height);c.drawImage(canvas,0,0);out.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='ndebele-virtual-tryon.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),5000)},'image/png')});document.addEventListener('visibilitychange',()=>{if(document.hidden&&active)cease()});
+</script></body></html>
